@@ -1,0 +1,9 @@
+# Define the goal
+# geometry_msgs/Pose pose
+EstimationPose pose
+---
+# Define the result
+bool reached_goal
+---
+# Define feedback message
+float32 progress
