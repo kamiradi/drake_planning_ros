@@ -9,7 +9,7 @@ import sensor_msgs.msg as sense_msg
 import control_msgs.msg as ctrl_msg
 from std_srvs.srv import Empty
 from dynamic_reconfigure.client import Client
-from switching_system.msg import CmdPoseAction, CmdPoseFeedback, CmdPoseResult
+from drake_planning_ros.msg import CmdPoseAction, CmdPoseFeedback, CmdPoseResult
 from pydrake.all import (
     RigidTransform, Quaternion, RollPitchYaw, PiecewisePose
 )

@@ -1,0 +1,10 @@
+# Define the goal
+geometry_msgs/Pose pose
+float64[] nom_joint_pos
+float32 duration
+---
+# Define the result
+bool reached_goal
+---
+# Define feedback message
+float32 progress

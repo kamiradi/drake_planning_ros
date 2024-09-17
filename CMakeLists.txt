@@ -70,6 +70,8 @@ add_action_files(
   action
   FILES
   CmdPose.action
+  DiffIKPose.action
+  IKPose.action
 )
 
 ## Generate added messages and services with any dependencies listed here
