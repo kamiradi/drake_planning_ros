@@ -1,20 +1,4 @@
-#! /usr/bin/env python3
-
-# Copyright (C) 2022 Statistical Machine Learning and Motor Control Group (SLMC)
-# Authors: Joao Moura (maintainer)
-# email: joao.moura@ed.ac.uk
-
-# This file is part of iiwa_optas package.
-
-# iiwa_optas is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-
-# iiwa_optas is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
+#!/usr/bin/python
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import optas
@@ -334,6 +318,12 @@ class IkPoseActionServer(object):
         self.plant, self.scene_graph = AddMultibodyPlantSceneGraph(builder, 0.0)
 
         # TODO: add the relevant urdf here
+        robot_instance = Parser(
+                self.plant,
+                self.scene_graph).AddModels(self._robot_description)
+        # self.plant.WeldFrames(
+        #         self.plant.world_frame(),
+        #         self.plant.GetFrameByName("world"))
 
         self.plant.Finalize()
 
