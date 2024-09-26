@@ -1,31 +1,72 @@
 #!/usr/bin/python
 import numpy as np
+import os
 from scipy.spatial.transform import Rotation as R
 import optas
+import tempfile
 
 # drake
 from pydrake.all import (
         DiagramBuilder, AddMultibodyPlantSceneGraph, InverseKinematics,
-        RotationMatrix, Solve)
+        RotationMatrix, Solve, RigidTransform, Quaternion, Parser)
 
 # ros
 import rospy
 import actionlib
 
-# messages
-from sensor_msgs.msg import JointState
 # ROS messages types for the real robot
+from sensor_msgs.msg import JointState
+import geometry_msgs.msg as geom_msg
 from std_msgs.msg import Float64MultiArray, MultiArrayLayout, MultiArrayDimension
 # ROS messages for command configuration action
 from iiwa_optas.msg import CmdPoseAction, CmdPoseFeedback, CmdPoseResult
 from drake_planning_ros.msg import IKPoseAction, IKPoseFeedback, IKPoseResult
-from drake_planning_ros.utils import *
+# from .utils import *
 
 # For mux controller name
 from std_msgs.msg import String
 # service for selecting the controller
 from topic_tools.srv import MuxSelect
 np.set_printoptions(precision=2)
+
+
+def _write_pose_msg(X_AB, p, q):
+    # p - position message
+    # q - quaternion message
+    X_AB = RigidTransform(X_AB)
+    p.x, p.y, p.z = X_AB.translation()
+    q.w, q.x, q.y, q.z = X_AB.rotation().ToQuaternion().wxyz()
+
+
+def to_ros_transform(X_AB):
+    """Converts Drake transform to ROS transform."""
+    msg = geom_msg.Transform()
+    _write_pose_msg(X_AB, p=msg.translation, q=msg.rotation)
+    return msg
+
+
+def to_ros_pose(X_AB):
+    """Converts Drake transform to ROS pose."""
+    msg = geom_msg.Pose()
+    _write_pose_msg(X_AB, p=msg.position, q=msg.orientation)
+    return msg
+
+
+def _read_pose_msg(p, q):
+    # p - position message
+    # q - quaternion message
+    return RigidTransform(
+        Quaternion(wxyz=[q.w, q.x, q.y, q.z]), [p.x, p.y, p.z])
+
+
+def from_ros_pose(pose):
+    """Converts ROS pose to Drake transform."""
+    return _read_pose_msg(p=pose.position, q=pose.orientation)
+
+
+def from_ros_transform(tr):
+    """Converts ROS transform to Drake transform."""
+    return _read_pose_msg(p=tr.translation, q=tr.rotation)
 
 
 def dict2np(dict: dict) -> np.ndarray:
@@ -317,10 +358,34 @@ class IkPoseActionServer(object):
         builder = DiagramBuilder()
         self.plant, self.scene_graph = AddMultibodyPlantSceneGraph(builder, 0.0)
 
-        # TODO: add the relevant urdf here
-        robot_instance = Parser(
+        # memory_fs = MemoryFS()
+        # urdf_path = "robot.urdf"
+        # with memory_fs.open(urdf_path, 'w') as urdf_file:
+        #     urdf_file.write(self._robot_description)
+        urdf_obj_data = self._robot_description.replace('.stl', '_obj.obj')
+
+        with tempfile.NamedTemporaryFile(
+                mode='w',
+                suffix='.urdf',
+                delete=False) as temp_file:
+            urdf_file_path = temp_file.name
+            temp_file.write(urdf_obj_data)
+
+        parser = Parser(
                 self.plant,
-                self.scene_graph).AddModels(self._robot_description)
+                self.scene_graph)
+        package_map = parser.package_map()
+        # HACK: hard coded package map path
+        package_map.Add('iiwa_peg', "/root/workspace/src/mp/iiwa_peg")
+        package_map.Add(
+                'iiwa_description',
+                "/root/workspace/src/robot/iiwa_description")
+        package_map.Add(
+                'realsense2_description',
+                '/opt/ros/noetic/share/realsense2_description')
+
+        # TODO: add the relevant urdf here
+        robot_instance = parser.AddModels(urdf_file_path)
         # self.plant.WeldFrames(
         #         self.plant.world_frame(),
         #         self.plant.GetFrameByName("world"))
@@ -421,7 +486,7 @@ class IkPoseActionServer(object):
             # qT_array = solution[f'{self.robot_name}/q']
             qT_array = result.GetSolution()
             ### ---------------------------------------------------------
-            T = acceped_goal.duration
+            T = accepted_goal.duration
             qT = np.asarray(qT_array).T[0]
             rospy.loginfo(f"{self.name}: Sending robot to config {qT}.")
             # helper variables
@@ -502,7 +567,7 @@ class IkPoseActionServer(object):
         self._action_server.set_preempted()
 
 
-class IkPoseActionServer(object):
+class IkPoseActionServerTemp(object):
     """
     Action server that sets up and computes an IK solution to a desired task
     space coordinate. It then constructs a 5th order spline trajectory between
@@ -648,7 +713,7 @@ class IkPoseActionServer(object):
             # qT_array = solution[f'{self.robot_name}/q']
             qT_array = result.GetSolution()
             ### ---------------------------------------------------------
-            T = acceped_goal.duration
+            T = accepted_goal.duration
             qT = np.asarray(qT_array).T[0]
             rospy.loginfo(f"{self.name}: Sending robot to config {qT}.")
             # helper variables
@@ -681,6 +746,6 @@ if __name__=='__main__':
     # Initialize node
     rospy.init_node('cmd_pose_server', anonymous=True)
     # Initialize node class
-    cmd_pose_server = CmdPoseActionServer(rospy.get_name())
+    cmd_pose_server = IkPoseActionServer(rospy.get_name())
     # executing node
     rospy.spin()
