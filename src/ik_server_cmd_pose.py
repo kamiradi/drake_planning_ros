@@ -8,7 +8,9 @@ import tempfile
 # drake
 from pydrake.all import (
         DiagramBuilder, AddMultibodyPlantSceneGraph, InverseKinematics,
-        RotationMatrix, Solve, RigidTransform, Quaternion, Parser)
+        RotationMatrix, Solve, RigidTransform, Quaternion, Parser,
+        StartMeshcat, MeshcatVisualizer, MeshcatVisualizerParams,
+        Simulator, BodyIndex, JointIndex, JointActuatorIndex)
 
 # ros
 import rospy
@@ -28,6 +30,28 @@ from std_msgs.msg import String
 # service for selecting the controller
 from topic_tools.srv import MuxSelect
 np.set_printoptions(precision=2)
+
+
+def inspect_plant(plant):
+
+    for joint_index in range(plant.num_joints()):
+        joint = plant.get_joint(JointIndex(joint_index))
+        print(f"Joint {joint_index}: {joint.name()}")
+        print(f" - Type: {joint.type_name()}")
+        print(f" - Parent body: {joint.parent_body().name()}")
+        print(f" - Child body: {joint.child_body().name()}")
+
+    # List all actuators
+    for actuator_index in range(plant.num_actuators()):
+        actuator = plant.get_joint_actuator(JointActuatorIndex(actuator_index))
+        print(f"Actuator {actuator_index}: {actuator.name()}")
+        print(f" - Joint: {actuator.joint().name()}")
+        print(f" - Effort limit: {actuator.effort_limit()}")
+
+    # List all bodies
+    for body_index in range(plant.num_bodies()):
+        body = plant.get_body(BodyIndex(body_index))
+        print(f"Body {body_index}: {body.name()}")
 
 
 def _write_pose_msg(X_AB, p, q):
@@ -322,6 +346,7 @@ class IkPoseActionServer(object):
         # initialization message
         self.name = name
         rospy.loginfo(f'{self.name}: Initializing class')
+        self.meshcat = StartMeshcat()
 
         # get parameters
         self.pos_min = dict2np(
@@ -358,10 +383,6 @@ class IkPoseActionServer(object):
         builder = DiagramBuilder()
         self.plant, self.scene_graph = AddMultibodyPlantSceneGraph(builder, 0.0)
 
-        # memory_fs = MemoryFS()
-        # urdf_path = "robot.urdf"
-        # with memory_fs.open(urdf_path, 'w') as urdf_file:
-        #     urdf_file.write(self._robot_description)
         urdf_obj_data = self._robot_description.replace('.stl', '_obj.obj')
 
         with tempfile.NamedTemporaryFile(
@@ -384,18 +405,47 @@ class IkPoseActionServer(object):
                 'realsense2_description',
                 '/opt/ros/noetic/share/realsense2_description')
 
-        # TODO: add the relevant urdf here
         robot_instance = parser.AddModels(urdf_file_path)
-        # self.plant.WeldFrames(
-        #         self.plant.world_frame(),
-        #         self.plant.GetFrameByName("world"))
 
         self.plant.Finalize()
+
+        # robot variables
+        # TODO: self.robot_name
+        self.robot_name = "iiwa"
+        # TODO: self.ndofS
+        self.ndof = self.plant.num_actuators()
+        self.gripper_frame = self.plant.GetFrameByName(self.link_ee)
 
         diagram = builder.Build()
         self.context = diagram.CreateDefaultContext()
         self.plant_context = self.plant.GetMyContextFromRoot(self.context)
-        q0 = self.plant.GetPositions(self.plant_context)
+
+        # inspect_plant(self.plant)
+        # variables
+        self.q_curr = np.zeros(self.ndof)
+
+        self._joint_sub = rospy.Subscriber(
+            '/joint_states',
+            JointState,
+            self.read_joint_states_callback)
+        self._joint_pub = rospy.Publisher(
+            self._pub_cmd_topic_name,
+            Float64MultiArray,
+            queue_size=10)
+
+        # mux related variables
+        # set mux controller selection as wrong by default
+        self._correct_mux_selection = True
+        # NOTE: this was the default
+        # self._correct_mux_selection = False
+        # declare mux service
+        self._srv_mux_sel = rospy.ServiceProxy(rospy.get_namespace() + '/mux_joint_position/select', MuxSelect)
+        # declare subscriber for selected controller
+        self._sub_selected_controller = rospy.Subscriber(
+            '/mux_selected',
+            String,
+            self.read_mux_selection
+        )
 
         # setup action server
         self._feedback = IKPoseFeedback()
@@ -413,6 +463,7 @@ class IkPoseActionServer(object):
         self._action_server.register_preempt_callback(self.preempt_callback)
         # start action server
         self._action_server.start()
+        rospy.loginfo(f'IK action server started')
 
     def goal_callback(self):
 
@@ -468,13 +519,13 @@ class IkPoseActionServer(object):
             goal_pose.translation(),
             goal_pose.translation()
             )
-        ik.AddOrientationConstraint(
-            self.gripper_frame,
-            RotationMatrix(),
-            self.plant.world_frame(),
-            goal_pose.rotation(),
-            0.0
-            )
+        # ik.AddOrientationConstraint(
+        #     self.gripper_frame,
+        #     RotationMatrix(),
+        #     self.plant.world_frame(),
+        #     goal_pose.rotation(),
+        #     0.0
+        #     )
 
         prog = ik.get_mutable_prog()
         q = ik.q()
@@ -487,7 +538,8 @@ class IkPoseActionServer(object):
             qT_array = result.GetSolution()
             ### ---------------------------------------------------------
             T = accepted_goal.duration
-            qT = np.asarray(qT_array).T[0]
+            # qT = np.asarray(qT_array).T[0]
+            qT = np.asarray(qT_array).T
             rospy.loginfo(f"{self.name}: Sending robot to config {qT}.")
             # helper variables
             self._steps = int(T * self._freq)
@@ -539,6 +591,7 @@ class IkPoseActionServer(object):
                 self._feedback.progress = (self._idx*100)/self._steps
                 # publish feedback
                 self._action_server.publish_feedback(self._feedback)
+                rospy.loginfo(f'feedback: {self._idx} / {self._steps}')
             else:
                 # shutdown this timer
                 self._timer.shutdown()
@@ -567,182 +620,7 @@ class IkPoseActionServer(object):
         self._action_server.set_preempted()
 
 
-class IkPoseActionServerTemp(object):
-    """
-    Action server that sets up and computes an IK solution to a desired task
-    space coordinate. It then constructs a 5th order spline trajectory between
-    current configuration and the computed configuration.
-    """
-
-    def __init__(self, name):
-
-        # initialization message
-        self.name = name
-        rospy.loginfo(f'{self.name}: Initializing class')
-
-        # get parameters
-        self.pos_min = dict2np(
-                rospy.get_param('~pos_min', {
-                    'x': -0.7,
-                    'y': -0.5,
-                    'z': 0.02}))
-        self.pos_max = dict2np(
-                rospy.get_param('~pos_max', {
-                    'x': -0.5,
-                    'y': 0.2,
-                    'z': 0.3}))
-        # end-effector frame
-        self.link_ee = rospy.get_param('~link_ee', 'link_ee')
-        self.link_ref = rospy.get_param('~link_ref', 'world')
-        # control frequency
-        self._freq = rospy.get_param('~freq', 100)
-        # publishing command node name
-        self._pub_cmd_topic_name = rospy.get_param(
-                '~cmd_topic_name',
-                '/command')
-        # load robot_description
-        param_robot_description = '~/robot_description'
-        if rospy.has_param(param_robot_description):
-            self._robot_description = rospy.get_param(param_robot_description)
-        else:
-            rospy.logerr(
-                    "%s: Param %s is unavailable!" % (
-                        self.name,
-                        param_robot_description))
-            rospy.signal_shutdown('Incorrect parameter name.')
-
-        # drake
-        builder = DiagramBuilder()
-        self.plant, self.scene_graph = AddMultibodyPlantSceneGraph(builder, 0.0)
-
-        # TODO: add the relevant urdf here
-
-        self.plant.Finalize()
-
-        diagram = builder.Build()
-        self.context = diagram.CreateDefaultContext()
-        self.plant_context = self.plant.GetMyContextFromRoot(self.context)
-        q0 = self.plant.GetPositions(self.plant_context)
-
-        # setup action server
-        self._feedback = IKPoseFeedback()
-        self._result = IKPoseResult()
-
-        # declare action server
-        self._action_server = actionlib.SimpleActionServer(
-                'ik_pose',
-                IKPoseAction,
-                execute_cb=None,
-                auto_start=False)
-
-        # register goal and preempt callback
-        self._action_server.register_goal_callback(self.goal_callback)
-        self._action_server.register_preempt_callback(self.preempt_callback)
-        # start action server
-        self._action_server.start()
-
-    def goal_callback(self):
-
-        # accept the new goal request
-        accepted_goal = self._action_server.accept_new_goal()
-        # desired end-effector position
-        pos_T = np.asarray([
-                accepted_goal.pose.position.x,
-                accepted_goal.pose.position.y,
-                accepted_goal.pose.position.z
-        ])
-        ori_T = np.asarray([
-                accepted_goal.pose.orientation.x,
-                accepted_goal.pose.orientation.y,
-                accepted_goal.pose.orientation.z,
-                accepted_goal.pose.orientation.w
-        ])
-        # check boundaries of the position
-        if (pos_T > self.pos_max).any() or (pos_T < self.pos_min).any():
-            rospy.logwarn("%s: Request aborted. Goal position (%.2f, %.2f, %.2f) is outside of the workspace boundaries. Check parameters for this node." % (self.name, pos_T[0], pos_T[1], pos_T[2]))
-            self._result.reached_goal = False
-            self._action_server.set_aborted(self._result)
-            return
-        # print goal request
-        rospy.loginfo(
-                '%s: Request to send robot to position (%.2f, %.2f, %.2f) and orientation (%.2f, %.2f, %.2f, %.2f) in %.1f seconds.' % (
-                self.name,
-                pos_T[0], pos_T[1], pos_T[2],
-                ori_T[0], ori_T[1], ori_T[2], ori_T[3],
-                accepted_goal.duration
-            )
-        )
-
-        # setup optimization
-        q0 = self.q_curr
-        q_nom = np.asarray(list(accepted_goal.nom_joint_pos))
-        if q_nom.size == 0:
-            q_nom = q0
-        if not (q_nom.size == self.ndof):
-            rospy.logerr(f"{self.name}: Nominal config {q_nom} should containt {self.ndof} positions.")
-            self._result.reached_goal = False
-            self._action_server.set_aborted(self._result)
-            return
-
-        goal_pose = from_ros_pose(accepted_goal.pose)
-        ik = InverseKinematics(
-                self.plant,
-                self.plant_context)
-        ik.AddPositionConstraint(
-            self.gripper_frame,
-            [0, 0, 0],
-            self.plant.world_frame(),
-            goal_pose.translation(),
-            goal_pose.translation()
-            )
-        ik.AddOrientationConstraint(
-            self.gripper_frame,
-            RotationMatrix(),
-            self.plant.world_frame(),
-            goal_pose.rotation(),
-            0.0
-            )
-
-        prog = ik.get_mutable_prog()
-        q = ik.q()
-        prog.AddQuadraticErrorCost(np.identity(len(q)), q0, q)
-        prog.SetInitialGuess(q, q0)
-        result = Solve(ik.prog())
-
-        if result.is_success():
-            # qT_array = solution[f'{self.robot_name}/q']
-            qT_array = result.GetSolution()
-            ### ---------------------------------------------------------
-            T = accepted_goal.duration
-            qT = np.asarray(qT_array).T[0]
-            rospy.loginfo(f"{self.name}: Sending robot to config {qT}.")
-            # helper variables
-            self._steps = int(T * self._freq)
-            self._idx = 0
-            Dq = qT - q0
-            # interpolate between current and target configuration 
-            self._q = lambda t: q0 + (10.*((t/T)**3) - 15.*((t/T)**4) + 6.*((t/T)**5))*Dq # 5th order
-            self._t = np.linspace(0., T, self._steps + 1)
-            # initialize the message
-            self._msg = Float64MultiArray()
-            self._msg.layout = MultiArrayLayout()
-            self._msg.layout.data_offset = 0
-            self._msg.layout.dim.append(MultiArrayDimension())
-            self._msg.layout.dim[0].label = "columns"
-            self._msg.layout.dim[0].size = self.ndof
-            # create timer
-            dur = rospy.Duration(1.0/self._freq)
-            self._timer = rospy.Timer(dur, self.timer_callback)
-            pass
-        else:
-            rospy.logerr(f"{self.name}: Failed to find a configuration for the desired pose.")
-            self._result.reached_goal = False
-            self._action_server.set_aborted(self._result)
-        return
-
-
-
-if __name__=='__main__':
+if __name__ == '__main__':
     # Initialize node
     rospy.init_node('cmd_pose_server', anonymous=True)
     # Initialize node class
