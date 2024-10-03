@@ -439,7 +439,8 @@ class IkPoseActionServer(object):
         # NOTE: this was the default
         # self._correct_mux_selection = False
         # declare mux service
-        self._srv_mux_sel = rospy.ServiceProxy(rospy.get_namespace() + '/mux_joint_position/select', MuxSelect)
+        self._srv_mux_sel = rospy.ServiceProxy(
+            rospy.get_namespace() + '/mux_joint_position/select', MuxSelect)
         # declare subscriber for selected controller
         self._sub_selected_controller = rospy.Subscriber(
             '/mux_selected',
@@ -467,6 +468,7 @@ class IkPoseActionServer(object):
 
     def goal_callback(self):
 
+        self._srv_mux_sel(self._pub_cmd_topic_name)
         # accept the new goal request
         accepted_goal = self._action_server.accept_new_goal()
         # desired end-effector position
@@ -524,7 +526,7 @@ class IkPoseActionServer(object):
         #     RotationMatrix(),
         #     self.plant.world_frame(),
         #     goal_pose.rotation(),
-        #     0.0
+        #     0.1
         #     )
 
         prog = ik.get_mutable_prog()
