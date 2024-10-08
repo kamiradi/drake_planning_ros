@@ -42,9 +42,6 @@ class CmdTwistActionServer(object):
         # initialization message
         self.name = name
         rospy.loginfo(f'{self.name}: Initializing class')
-        #################################################################################
-        ## get parameters:
-        #################################################################################
         # cmd twist action name
         self.cmd_twist_action_server_name = rospy.get_param('~cmd_twist_action_server_name', 'cmd_twist')
         # safety gains on joint position and velocity limits
@@ -387,9 +384,6 @@ class DiffIKActionServer(object):
         # initialization message
         self.name = name
         rospy.loginfo(f'{self.name}: Initializing class')
-        #################################################################################
-        ## get parameters:
-        #################################################################################
         # cmd twist action name
         self.cmd_twist_action_server_name = rospy.get_param('~cmd_twist_action_server_name', 'cmd_twist')
         # safety gains on joint position and velocity limits
@@ -621,6 +615,8 @@ class DiffIKActionServer(object):
                 self.ndof,
                 self.ndof)
             diff_ik_params.set_nominal_joint_position(q_curr)
+            velocity_flag = np.asarray([False, False, False, True, True, True])
+            diff_ik_params.set_end_effector_velocity_flag(velocity_flag)
             diff_ik_params.set_end_effector_translational_velocity_limits(
                 -1*self.dt*self._twist_max[0:3],
                 self.dt*self._twist_max[0:3],
